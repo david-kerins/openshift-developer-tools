@@ -70,6 +70,7 @@ getLocalPipelineCommentFilter () {
   # Uncomment the main local settings ...
   _commentFilter="${_commentFilter}/SOURCE_REPOSITORY_URL/s~^#~~;"
   _commentFilter="${_commentFilter}/SOURCE_REPOSITORY_REF/s~^#~~;"
+  _commentFilter="${_commentFilter}/SOURCE_REPOSITORY_KEY/s~^#~~;"
   
   echo "sed ${_commentFilter}"  
 }
