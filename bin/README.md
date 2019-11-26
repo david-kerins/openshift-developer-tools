@@ -92,8 +92,6 @@ $ awk -W version
 GNU Awk 4.2.1, API: 2.0 (GNU MPFR 4.0.2, GNU MP 6.1.2)
 ```
 
-
-
 ## Project Structure
 
 To use these scripts your project structure should be organized in one of two ways; split out by component, or simplified.  The one you choose should be based on the complexity of your project and your personal development preferences.
@@ -131,8 +129,6 @@ You will need to include a `settings.sh` file in your top level `./openshift` di
 
 At a minimum this file should contain definitions for your `PROJECT_NAMESPACE`, `GIT_URI`, and `GIT_REF` all of which should be setup to be overridable.
 
-*When using the Component Project Structure you will also need to override `PROJECT_OS_DIR`.*  Refer to the Full Component Project Structure Example for details.
-
 **For Example:**
 ```
 export PROJECT_NAMESPACE=${PROJECT_NAMESPACE:-devex-von-permitify}
@@ -163,7 +159,6 @@ export routes="bc-registries worksafe-bc"
 **Full Component Project Structure Example:**
 ```
 export PROJECT_NAMESPACE="devex-von"
-export PROJECT_OS_DIR=${PROJECT_OS_DIR:-../../openshift}
 
 export GIT_URI="https://github.com/bcgov/TheOrgBook.git"
 export GIT_REF="master"
@@ -354,6 +349,27 @@ If you run into certificate errors like `x509: certificate signed by unknown aut
 Following is a list of the top level scripts.  There are additional lower level scripts that are not listed here since they are wrapped into top level scripts.
 
 Use `-h` to get more detailed usage information on the scripts.
+
+## testConnection
+
+A script for testing whether or not one or more host:port combinations are opened or closed.  The script can be used to test connections locally or remotely from within a pod in order to test connectivity from that pod to other services.
+
+Example testing the connectivity from one pod to other pods:
+```
+$ testConnection -f TestConnections.txt -n devex-von-tools -p angular-on-nginx
+
+Reading list of hosts and ports from TestConnections.txt ...
+
+Testing connections from devex-von-tools/angular-on-nginx ...
+google.com:80 - Open
+angular-on-nginx:8080 - Closed
+django:8080 - Open
+postgresql:5432 - Closed
+weasyprint:5001 - Closed
+schema-spy:8080 - Closed
+```
+
+Run `testConnection -h` for additional details.
 
 ## dropAndRecreateDatabase.sh
 
