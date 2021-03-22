@@ -14,14 +14,14 @@ getRelativeOutputDir () {
 }
 
 echoWarning (){
-  _msg=${1}
+  _msg=${@}
   _yellow='\033[1;33m'
   _nc='\033[0m' # No Color
   echo -e "${_yellow}${_msg}${_nc}" >&2
 }
 
 echoError (){
-  _msg=${1}
+  _msg=${@}
   _red='\033[0;31m'
   _nc='\033[0m' # No Color
   echo -e "${_red}${_msg}${_nc}" >&2
@@ -163,17 +163,61 @@ podExists (){
 dcExists (){
   (
     _dcName=${1}
+    _namespace=$(getProjectName)
+
     if [ -z "${_dcName}" ]; then
       echo -e \\n"dcExists; Missing parameter!"\\n
       exit 1
     fi
 
-    _dcInstanceName=$(oc -n devex-von-image-tools get dc ${_dcName} --ignore-not-found --template "{{ .metadata.name }}")
+    _dcInstanceName=$(oc -n ${_namespace} get dc ${_dcName} --ignore-not-found --template "{{ .metadata.name }}")
     if [ ! -z "${_dcInstanceName}" ]; then
       # The  deployment configuration exists ...
       return 0
     else
       # The deployment configuration does not exist ...
+      return 1
+    fi
+  )
+}
+
+isExists (){
+  (
+    _isName=${1}
+    _namespace=${2:-${TOOLS}}
+
+    if [ -z "${_isName}" ]; then
+      echo -e \\n"isExists; Missing parameter!"\\n
+      exit 1
+    fi
+
+    _isInstanceName=$(oc -n ${_namespace} get is ${_isName} --ignore-not-found --template "{{ .metadata.name }}")
+    if [ ! -z "${_isInstanceName}" ]; then
+      # The  build configuration exists ...
+      return 0
+    else
+      # The build configuration does not exist ...
+      return 1
+    fi
+  )
+}
+
+bcExists (){
+  (
+    _bcName=${1}
+    _namespace=${2:-${TOOLS}}
+
+    if [ -z "${_bcName}" ]; then
+      echo -e \\n"bcExists; Missing parameter!"\\n
+      exit 1
+    fi
+
+    _bcInstanceName=$(oc -n ${_namespace} get bc ${_bcName} --ignore-not-found --template "{{ .metadata.name }}")
+    if [ ! -z "${_bcInstanceName}" ]; then
+      # The  build configuration exists ...
+      return 0
+    else
+      # The build configuration does not exist ...
       return 1
     fi
   )
@@ -331,7 +375,7 @@ getTemplateDir () {
     if [ ! -z ${_componentName} ] && [ ${_componentName} == '.' ]; then
       unset _componentName
     fi
-    
+
     _componentName=${_componentName:-${COMP}}
     _searchPath=${2:-${PROJECT_DIR}}
     unset _comResults
@@ -365,17 +409,34 @@ filterTemplateList () {
 
     OIFS=$IFS
     IFS=" "
-    ignore_templates_array=(${ignore_templates})
-    for template in ${templates}; do
-      templateName=$(getFilenameWithoutExt ${template})
-      if ! contains "${templateName}" "${ignore_templates_array[@]}"; then
-        filteredTemplates+=${template}
-      else
-        echoWarning "Filtering, ${template}, from the list of templates ..."
-      fi
-    done
-    IFS=$OIFS
 
+    # Filter on include list
+    if [ ! -z "${include_templates}" ]; then
+      include_templates_array=(${include_templates})
+      for template in ${templates}; do
+        templateName=$(getFilenameWithoutExt ${template})
+        if contains "${templateName}" "${include_templates_array[@]}"; then
+          filteredTemplates+=" ${template}"
+        else
+          echoWarning "Filtering, '${template}', from the list of templates, it is not in the list of templates to include ..."
+        fi
+      done
+    fi
+
+    # Filter on ignore list
+    if [ ! -z "${ignore_templates}" ]; then
+      ignore_templates_array=(${ignore_templates})
+      for template in ${templates}; do
+        templateName=$(getFilenameWithoutExt ${template})
+        if ! contains "${templateName}" "${ignore_templates_array[@]}"; then
+          filteredTemplates+=" ${template}"
+        else
+          echoWarning "Filtering, '${template}', from the list of templates, it is in the list of templates to be ignored ..."
+        fi
+      done
+    fi
+
+    IFS=$OIFS
     echo ${filteredTemplates}
   )
 }
@@ -395,7 +456,7 @@ getTemplates () {
       templates+=" $(find ${searchPath} -regex "^.*\.\(json\|yaml\|yml\)" -exec grep -l "${_filter}" '{}' \;)"
     done
 
-    if [ ! -z "${ignore_templates}" ]; then
+    if [ ! -z "${ignore_templates}" ] || [ ! -z "${include_templates}" ]; then
       templates=$(filterTemplateList ${templates})
     fi
 
@@ -403,17 +464,74 @@ getTemplates () {
   )
 }
 
-getBuildTemplates () {
+nspTemplateFilter="\bNetworkSecurityPolicy\b\|\bExternalNetwork\b\|\bNetworkPolicy\b"
+getNspTemplates () {
   (
+    _filter=${1}
+    shift
     _searchPaths=${@}
-    echo $(getTemplates "BuildConfig\|\"ImageStream\"\|kind:.ImageStream$" ${_searchPaths})
+    nspTemplates=$(getTemplates "${nspTemplateFilter}" ${_searchPaths})
+    buildAndDeployTemplates+=" $(getTemplates "${buildTemplateFilter}" ${_searchPaths})"
+    buildAndDeployTemplates+=" $(getTemplates "${deploymentTemplateFilter}" ${_searchPaths})"
+    echo $(filterList "${nspTemplates}" "${buildAndDeployTemplates}") | tr " " "\n" | grep ${_filter}
   )
 }
 
+filterList () {
+  (
+    listItems=${1}
+    filterItems=${2}
+
+    OIFS=$IFS
+    IFS=" "
+
+    unset filteredList
+    filterItemsArray=(${filterItems})
+    for listItem in ${listItems}; do
+      if ! contains "${listItem}" "${filterItemsArray[@]}"; then
+        filteredList+=" ${listItem}"
+      fi
+    done
+
+    IFS=$OIFS
+    echo ${filteredList}
+  )
+}
+
+nspBuildTemplateFilter="build.*"
+getBuildNspTemplates () {
+  (
+    _searchPaths=${@}
+    echo $(getNspTemplates "${nspBuildTemplateFilter}" ${_searchPaths})
+  )
+}
+
+getDeploymentNspTemplates () {
+  (
+    _searchPaths=${@}
+    echo $(getNspTemplates "deploy.*" ${_searchPaths})
+  )
+}
+
+buildTemplateFilter="\bBuildConfig\b\|\bpullSecret\b\|\bImageStream\b\|kind:.ImageStream$"
+getBuildTemplates () {
+  (
+    _searchPaths=${@}
+    unset buildTemplates
+    buildTemplates+=" $(getTemplates "${buildTemplateFilter}" ${_searchPaths})"
+    buildTemplates+=" $(getBuildNspTemplates ${_searchPaths})"
+    echo ${buildTemplates}
+  )
+}
+
+deploymentTemplateFilter="\bDeployment\b\|\bDeploymentConfig\b\|\bStatefulSet\b\|\bRoute\b\|\bSecret\b"
 getDeploymentTemplates () {
   (
     _searchPaths=${@}
-    echo $(getTemplates "DeploymentConfig\|Route" ${_searchPaths})
+    unset deploymentTemplates
+    deploymentTemplates+=" $(getTemplates "${deploymentTemplateFilter}" ${_searchPaths})"
+    deploymentTemplates+=" $(getDeploymentNspTemplates ${_searchPaths})"
+    echo ${deploymentTemplates}
   )
 }
 
@@ -472,6 +590,11 @@ isBuildConfig() {
   fi
 
   _isBuildConfig=$( grep -l "BuildConfig\|\"ImageStream\"\|kind:.ImageStream$" ${_template} )
+  if [ -z "${_isBuildConfig}" ]; then
+    # Check if it's a NSP for the build (tools) environment ...
+    _isBuildConfig=$(echo "${_template}" | grep ${nspBuildTemplateFilter})
+  fi
+
   if [ -z "${_isBuildConfig}" ]; then
     return 1
   else
@@ -556,39 +679,160 @@ getPipelineName (){
 }
 
 recyclePods() {
-  _pods=${@}
-  if [ -z "${_pods}" ]; then
-    echo -e \\n"recyclePods; Missing parameter!  You must specify the name of at least one pod."\\n
-    exit 1
-  fi
+  (
+      local OPTIND
+      unset local wait
+      unset local flags
+      while getopts w FLAG; do
+        case $FLAG in
+          w )
+            local wait=1
+            local flags="-w"
+            ;;
+        esac
+      done
+      shift $((OPTIND-1))
 
-  scaleDown ${_pods}
-  printAndWait "Wait for all of the pods (${_pods}) to scale down completely before continuing."
-  scaleUp ${_pods}
+    _pods=${@}
+    if [ -z "${_pods}" ]; then
+      _pods=$(getAllPods)
+      echoWarning "\nRecycling Scaling all pods;" ${_pods}\\n
+    fi
+
+    scaleDown ${flags} ${_pods}
+    if [ -z ${wait} ]; then
+      printAndWait "Wait for all of the pods (${_pods}) to scale down completely before continuing."
+    fi
+    scaleUp ${flags} ${_pods}
+  )
 }
 
 scaleUp() {
-  _pods=${@}
-  if [ -z "${_pods}" ]; then
-    echo -e \\n"scaleUp; Missing parameter!  You must specify the name of at least one pod."\\n
-    exit 1
-  fi
+  (
+    local OPTIND
+    unset local wait
+    while getopts w FLAG; do
+      case $FLAG in
+        w ) local wait=1 ;;
+      esac
+    done
+    shift $((OPTIND-1))
 
-  for _pod in ${_pods}; do
-    scaleDeployment ${_pod} 1
-  done
+    _pods=${@}
+    if [ -z "${_pods}" ]; then
+      _pods=$(getAllPods)
+      echoWarning "\nScaling all pods;" ${_pods}\\n
+    fi
+
+    for _pod in ${_pods}; do
+      scaleDeployment ${_pod} 1
+      if [ ! -z ${wait} ]; then
+        waitOnScaleUp ${_pod}
+      fi
+    done
+  )
+}
+
+waitOnScaleUp() {
+  (
+    _deplymentConfigName=${1}
+    _namespace=$(getProjectName)
+    if [ -z "${_deplymentConfigName}" ]; then
+      echo -e \\n"waitOnScaleUp; Missing parameter!  You must specify the name of the deployment."\\n
+      exit 1
+    fi
+
+    printf "Waiting for %s to scale up " ${_deplymentConfigName}
+    while ! isScaledUp ${_deplymentConfigName}; do
+      printf "."
+      sleep 1
+    done
+    echo -e \\n
+  )
+}
+
+isScaledUp() {
+  (
+    _deplymentConfigName=${1}
+    _namespace=$(getProjectName)
+    if [ -z "${_deplymentConfigName}" ]; then
+      echo -e \\n"isScaledUp; Missing parameter!  You must specify the name of the deployment."\\n
+      exit 1
+    fi
+
+    _podCount=$(oc -n ${_namespace} get dc ${_deplymentConfigName} --template "{{ .status.availableReplicas }}")
+    if ((${_podCount} >= 1)); then
+      return 0
+    else
+      return 1
+    fi
+  )
 }
 
 scaleDown() {
-  _pods=${@}
-  if [ -z "${_pods}" ]; then
-    echo -e \\n"scaleDown; Missing parameter!  You must specify the name of at least one pod."\\n
-    exit 1
-  fi
+  (
 
-  for _pod in ${_pods}; do
-    scaleDeployment ${_pod}
-  done
+    local OPTIND
+    unset local wait
+    while getopts w FLAG; do
+      case $FLAG in
+        w ) local wait=1 ;;
+      esac
+    done
+    shift $((OPTIND-1))
+
+
+    _pods=${@}
+    if [ -z "${_pods}" ]; then
+      _pods=$(getAllPods)
+      echoWarning "\nScaling all pods;" ${_pods}\\n
+    fi
+
+    for _pod in ${_pods}; do
+      scaleDeployment ${_pod}
+      if [ ! -z ${wait} ]; then
+        waitOnScaleDown ${_pod}
+      fi
+
+    done
+  )
+}
+
+waitOnScaleDown() {
+  (
+    _deplymentConfigName=${1}
+    _namespace=$(getProjectName)
+    if [ -z "${_deplymentConfigName}" ]; then
+      echo -e \\n"waitOnScaleDown; Missing parameter!  You must specify the name of the deployment."\\n
+      exit 1
+    fi
+
+    deplymentConfigInstance=$(getDeplymentConfigInstanceName ${_deplymentConfigName})
+    printf "Waiting for %s to scale to zero " ${_deplymentConfigName}
+    while ! isScaledDown ${deplymentConfigInstance}; do
+      printf "."
+      sleep 1
+    done
+    echo -e \\n
+  )
+}
+
+isScaledDown() {
+  (
+    _deplymentConfigInstance=${1}
+    _namespace=$(getProjectName)
+    if [ -z "${_deplymentConfigName}" ]; then
+      echo -e \\n"isScaledDown; Missing parameter!  You must specify the instance name of the deployment."\\n
+      exit 1
+    fi
+
+    _podCount=$(getPodCount ${_deplymentConfigInstance})
+    if ((${_podCount} == 0)); then
+      return 0
+    else
+      return 1
+    fi
+  )
 }
 
 scaleDeployment() {
@@ -603,6 +847,32 @@ scaleDeployment() {
 
     oc scale -n ${_namespace} --replicas=${_numReplicas} dc ${_deplymentConfigName}
   )
+}
+
+getDeplymentConfigInstanceName() {
+  (
+    _deplymentConfigName=${1}
+    _namespace=$(getProjectName)
+    if [ -z "${_deplymentConfigName}" ]; then
+      echo -e \\n"getDeplymentConfigInstanceName; Missing parameter!  You must specify the name of the deployment."\\n
+      exit 1
+    fi
+
+    deplymentConfigInstance=${_deplymentConfigName}-$(oc -n ${_namespace} get dc ${_deplymentConfigName} --template "{{ .status.latestVersion }}")
+    echo ${deplymentConfigInstance}
+  )
+}
+
+getPodCount() {
+    _deplymentConfigInstance=${1}
+    _namespace=$(getProjectName)
+    if [ -z "${_deplymentConfigName}" ]; then
+      echo -e \\n"getPodCount; Missing parameter!  You must specify the instance name of the deployment."\\n
+      exit 1
+    fi
+
+    _podCount=$(oc -n ${_namespace} get pods -l deployment=${_deplymentConfigInstance} --template '{{ range .items }}{{ printf "%s\n" .metadata.name }}{{end}}' --ignore-not-found | wc -l)
+    echo ${_podCount}
 }
 
 deleteFromPods() {
@@ -638,6 +908,10 @@ getProjectName() {
 
 switchProject() {
   _projectName=$(getProjectName ${1})
+
+  echoWarning "switchProject has been deprecated in favor of using the oc -n option to specify the target namespace."
+  echoWarning "Please update your scripts accordingly."
+
   echo "Switching to ${_projectName} ..."
   oc project ${_projectName} >/dev/null
 }
@@ -651,7 +925,7 @@ getAllPods() {
   if [ ! -z "${_pods}" ]; then
     echo "${_pods}"
   else
-    oc get dc | awk '{if(NR>1)print $1}'
+    oc -n $(getProjectName) get dc | awk '{if(NR>1)print $1}'
   fi
 }
 
@@ -709,7 +983,7 @@ getBuildConfigFiles() {
   if [ ! -z "${_configFiles}" ]; then
     echo "${_configFiles}"
   else
-    find . -name "*${BUILD_CONFIG_SUFFIX}"
+    find ../ -type f -name "*${BUILD_CONFIG_SUFFIX}"
   fi
 }
 
@@ -721,40 +995,75 @@ cleanBuildConfigs() {
   done
 }
 
+routeExists() {
+  (
+    routeName=${1}
+    projectName=${2:-$(getProjectName)}
+
+    rtnVal=$(oc -n ${projectName} get route ${routeName} -o name --ignore-not-found)
+    if [ -z "${rtnVal}" ]; then
+      # Route does not exist ..."
+        return 1
+    else
+      # Route exists ..."
+        return 0
+    fi
+  )
+}
+
 # Update route configuration including hostname
 updateRoutes() {
   (
     deploymentConfigFile=${1}
+    projectName=${2:-$(getProjectName)}
     if [ -z "${deploymentConfigFile}" ]; then
       echo -e \\n"updateRoutes; Missing parameter!"\\n
       exit 1
     fi
 
     # Filter out anything that is not a route ...
-    routeConfig=$(cat ${deploymentConfigFile} | jq 'if .items != null then del(.items[] | select(.kind != "Route")) else del(select(.kind != "Route")) end')
-    if [ -z "${routeConfig}" ] || [ "${routeConfig}" = "null" ]; then
+    routeConfigs=$(cat ${deploymentConfigFile} | jq 'if .items != null then del(.items[] | select(.kind != "Route")) else del(select(.kind != "Route")) end')
+    if [ -z "${routeConfigs}" ] || [ "${routeConfigs}" = "null" ]; then
       # Everything was filtered out, so there is nothing left to update ...
-      exit 0
+      return 0
     fi
 
     # Determine if there is anything left ...
-    routeConfigLength=$(echo ${routeConfig} | jq '.items[] | length')
-    if [ ! -z "${routeConfigLength}" ]; then
-      # The hostname on a route is immutable, so the route needs to be deleted and replaced ...
-      # 'oc apply' will not delete and replace the route even if --force is used.
-      # 'oc apply' will not update the host field if it has changed.
-      # Therefore, 'oc replace' needs to be used to update the route.
-      #
-      # --force - Forces the delete and replace
-      # --save-config - Maintains compatibility with 'oc apply'
-      echo ${routeConfig} | oc replace --force --save-config -f -
-      exitOnError
+    routeConfigsLength=$(echo ${routeConfigs} | jq '.items | length')
+    echoWarning "Found ${routeConfigsLength} routes to update ..."
+
+    if (( "${routeConfigsLength}" > 0 )); then
+      for (( itemIndex=0; itemIndex<${routeConfigsLength}; itemIndex++ ))
+      do
+        routeConfig=$(echo ${routeConfigs} | jq ".items[${itemIndex}]")
+        routeName=$(echo ${routeConfig} | jq -r '.metadata.name')
+        if routeExists "${routeName}" "${projectName}"; then
+          echoWarning "Patching ${routeName} ..."
+          # The hostname on a route is immutable, so the route needs to be deleted and replaced ...
+          # 'oc apply' will not delete and replace the route even if --force is used.
+          # 'oc apply' will not update the host field if it has changed.
+          # 'oc patch' will not update the route directly.
+          # Therefore, 'oc replace' needs to be used to update the route.
+          # --force - Forces the delete and replace
+          # --save-config - Maintains compatibility with 'oc apply'
+          #
+          # 'oc patch' is used with --dry-run it retain any additional route configurations such as certificates.
+          oc -n ${projectName} patch route ${routeName} --dry-run -o json -p "${routeConfig}" | oc -n ${projectName} replace --force --save-config -f -
+        else
+          echoWarning "Creating ${routeName} ..."
+          echo ${routeConfig} | oc -n ${projectName} $(getOcAction) -f -
+        fi
+
+        exitOnError
+        echo
+      done
     fi
   )
 }
 
 deployConfigs() {
   _configFiles=$(getConfigFiles ${@})
+  _projectName=$(getProjectName)
   for configFile in ${_configFiles}; do
 
     if updateOperation; then
@@ -765,23 +1074,104 @@ deployConfigs() {
       config=$(cat ${configFile} | jq 'if .items != null then del(.items[] | select(.kind == "Route")) else del(select(.kind == "Route"))  end')
       if [ -z "${config}" ] || [ "${config}" = "null" ]; then
         # Everything was filtered out, so there is nothing left to update ...
-        exit 0
+        continue
       fi
 
-      echo "${config}" | oc $(getOcAction) -f -
+      echo "${config}" | oc -n ${_projectName} $(getOcAction) -f -
       exitOnError
     else
-      oc $(getOcAction) -f ${configFile}
+      oc -n ${_projectName} $(getOcAction) -f ${configFile}
       exitOnError
     fi
   done
 }
 
+buildConfigExists() {
+  (
+    buildName=${1}
+    projectName=${2:-$(getProjectName)}
+
+    rtnVal=$(oc -n ${projectName} get bc ${buildName} -o name --ignore-not-found)
+    if [ -z "${rtnVal}" ]; then
+      # Route does not exist ..."
+        return 1
+    else
+      # Route exists ..."
+        return 0
+    fi
+  )
+}
+
+updateBuildConfigs() {
+  (
+    buildConfigFile=${1}
+    projectName=${2:-${TOOLS}}
+    if [ -z "${buildConfigFile}" ]; then
+      echo -e \\n"updateBuildConfigs; Missing parameter!"\\n
+      exit 1
+    fi
+
+    # Filter out anything that is not a buildConfig ...
+    buildConfigs=$(cat ${buildConfigFile} | jq 'if .items != null then del(.items[] | select(.kind != "BuildConfig")) else del(select(.kind != "BuildConfig")) end')
+    if [ -z "${buildConfigs}" ] || [ "${buildConfigs}" = "null" ]; then
+      # Everything was filtered out, so there is nothing left to update ...
+      return 0
+    fi
+
+    # Determine if there is anything left ...
+    buildConfigsLength=$(echo ${buildConfigs} | jq '.items | length')
+    echoWarning "Found ${buildConfigsLength} buildConfigs to update ..."
+
+    if (( "${buildConfigsLength}" > 0 )); then
+      for (( itemIndex=0; itemIndex<${buildConfigsLength}; itemIndex++ ))
+      do
+        buildConfig=$(echo ${buildConfigs} | jq ".items[${itemIndex}]")
+        buildName=$(echo ${buildConfig} | jq -r '.metadata.name')
+        if buildConfigExists "${buildName}" "${projectName}"; then
+          echoWarning "Patching ${buildName} ..."
+          # Filter out the triggers from the new config so we can retain the existing ones
+          filteredConfig=$(echo "${buildConfig}" | jq 'if .items != null then del(.items[] | select(.kind == "BuildConfig") | .spec.triggers) else del(select(.kind == "BuildConfig") | .spec.triggers) end')
+          # 'oc patch' is used with --dry-run it retain the trigger settings of the exiting buildConfig.
+          # This ensures exiting webhooks are not broken when the build is updated.
+          oc -n ${projectName} patch bc ${buildName} --dry-run -o json -p "${filteredConfig}" | oc -n ${projectName} $(getOcAction) -f -
+        else
+          echoWarning "Creating ${buildName} ..."
+          echo ${buildConfig} | oc -n ${projectName} $(getOcAction) -f -
+        fi
+
+        exitOnError
+        echo
+      done
+    fi
+  )
+}
+
 deployBuildConfigs() {
   _configFiles=$(getBuildConfigFiles ${@})
+  projectName=${TOOLS}
+
   for configFile in ${_configFiles}; do
-    oc $(getOcAction) -f ${configFile}
-    exitOnError
+    if updateOperation; then
+      # Update existing buildConfigs first ...
+      updateBuildConfigs ${configFile}
+
+      # Filter out the buildConfigs, since we've already updated them ...
+      config=$(cat ${configFile} | jq 'if .items != null then del(.items[] | select(.kind == "BuildConfig")) else del(select(.kind == "BuildConfig"))  end')
+      numItems=$(echo ${config} | jq '.items | length')
+      if (( "${numItems}" <= 0 )); then
+        # Everything was filtered out, so there is nothing left to update ...
+        continue
+      fi
+
+      echo "${config}" | oc -n ${projectName} $(getOcAction) -f -
+      exitOnError
+    elif createOperation; then
+      oc -n ${projectName} $(getOcAction) -f ${configFile}
+      exitOnError
+    else
+      echoError "\nUnrecognized operation, $(getOperation).  Unable to process build configuration.\n"
+      exit 1
+    fi
   done
 }
 
@@ -792,9 +1182,12 @@ deployBuildConfigs() {
 runInContainer() {
   (
     local OPTIND
-    while getopts v FLAG; do
+    local unset _verbose
+    local unset _flags
+    while getopts vi FLAG; do
       case $FLAG in
-        v ) _verbose=1 ;;
+        v ) local _verbose=1 ;;
+        i ) local _flags="-i -t" ;;
       esac
     done
     shift $((OPTIND-1))
@@ -807,17 +1200,23 @@ runInContainer() {
       exit 1
     fi
 
+    if [ "$OSTYPE" == "msys" ] && [ ! -z "${_flags}" ]; then
+      OC_CMD="winpty oc"
+    else
+      OC_CMD="oc"
+    fi
+
     # Get name of a currently deployed pod by label and index
     _podInstanceName=$(getPodByName "${_podName}" "${_podIndex}")
     if [ ! -z "${_podInstanceName}" ]; then
       if [ ! -z "${_verbose}" ]; then
-        echo -e "\nExecuting command on ${_podInstanceName}:"
+        echo -e "\nExecuting command on $(getProjectName)/${_podInstanceName}:"
         echo -e "\t${_command}\n"
       fi
-      oc exec "${_podInstanceName}" -n $(getProjectName) -- bash -c "${_command:-echo Hello}"
+      ${OC_CMD} exec ${_flags} -n $(getProjectName) "${_podInstanceName}" -- bash -c "${_command:-echo Hello}"
     else
       if [ ! -z "${_verbose}" ]; then
-        echoWarning "\nrunInContainer; a running instance of ${_podName} was not found.\n"
+        echoWarning "\nrunInContainer; a running instance of $(getProjectName)/${_podName} was not found.\n"
       fi
     fi
   )
@@ -831,6 +1230,8 @@ runInContainerInteractively() {
     exit 1
   fi
 
+  echoWarning "\nrunInContainerInteractively is deprecated, use 'runInContainer -i' instead."
+
   _podInstanceName=$(getPodByName ${_podName})
   exitOnError
 
@@ -839,7 +1240,7 @@ runInContainerInteractively() {
   echo -e "\t${_command}"
   echo
 
-  oc exec -i "${_podInstanceName}" -- bash -c "${_command}"
+  oc -n $(getProjectName) exec -i "${_podInstanceName}" -- bash -c "${_command}"
 }
 
 isInstalled(){
@@ -892,8 +1293,8 @@ getPodNameByLabel() {
       # Get the pod name using the specified pod index ...
       _podInstanceName=$(oc get pods -n $(getProjectName) -l "${_label}=${_podName}" --template "{{ with index .items ${_podIndex} }}{{ .metadata.name }}{{ end }}" --ignore-not-found)
     else
-      # Get the name of the first running pod ...
-      _podInstanceName=$(oc get pods -n $(getProjectName) -l "${_label}=${_podName}" --template '{{ range .items }}{{ if eq .status.phase "Running" }}{{ printf "%s\n" .metadata.name }}{{end}}{{end}}' --ignore-not-found | head -n 1)
+      # Get the name of the first "Ready" pod ...
+      _podInstanceName=$(oc get pods -n $(getProjectName) -l "${_label}=${_podName}" --template '{{ range $item := .items }}{{ range .status.conditions }}{{ if and (eq .type "Ready") (eq .status "True") }}{{ printf "%s\n" $item.metadata.name }}{{end}}{{end}}{{end}}' --ignore-not-found | head -n 1)
     fi
     echo ${_podInstanceName}
   )
@@ -902,11 +1303,38 @@ getPodNameByLabel() {
 
 readConf(){
   (
+    local OPTIND
+    local OPTARG
+    unset local flatten
+    unset local delimiter
+    while getopts fd: FLAG; do
+      case $FLAG in
+        f )
+          local flatten=1
+          ;;
+        d )
+          local delimiter=${OPTARG}
+          ;;
+      esac
+    done
+    shift $((OPTIND-1))
+
+    # Comma delimit by default ...
+    if [ -z ${delimiter} ]; then
+      delimiter=','
+    fi
+
     configFile=${1}
     if [ -f ${configFile} ]; then
       # Read in the config minus any comments ...
       echo -e \\n"Reading config from ${configFile} ..." >&2
       _value=$(sed '/^[[:blank:]]*#/d;s/#.*//' ${configFile})
+
+      if [ ! -z ${flatten} ]; then
+        # flatten into a single line delimited string ...
+        filters=":a;N;\$!ba;s~\n~${delimiter}~g;"
+        _value=$(echo "${_value}" | sed "${filters}")
+      fi
     fi
 
     echo "${_value}"
@@ -986,7 +1414,6 @@ installCertificates() {
 
     for route in ${routes}; do
       if isProjectRoute "${projectName}" "${route}"; then
-        echo
         installCertificate "${route}"
       fi
     done
@@ -1017,16 +1444,20 @@ installCertificate() {
       exit 1
     fi
 
-    resourceType="route"
-    echo "Installing certificate [${certPath}] and private key [${pkPath}] on route [${routeName}] in project [${projectName}] ..."
+    if [ -f ${certPath} ] && [ -f ${pkPath} ]; then
+      resourceType="route"
+      echo "Installing certificate [${certPath}] and private key [${pkPath}] on route [${routeName}] in project [${projectName}] ..."
 
-    unset certPatch
-    certPatch=$(getCertificatePatch "${certPath}" "${pkPath}")
+      unset certPatch
+      certPatch=$(getCertificatePatch "${certPath}" "${pkPath}")
 
-    if [ ! -z "${certPatch}" ]; then
-      eval oc -n ${projectName} patch ${resourceType} ${routeName} -p ${certPatch}
+      if [ ! -z "${certPatch}" ]; then
+        eval oc -n ${projectName} patch ${resourceType} ${routeName} -p ${certPatch}
+      else
+        echoError "Unable to install the certificate.  To install the certificate please ensure copies of the certificate and private key exist in the specified location."
+      fi
     else
-      echoError "Unable to install the certificate.  To install the certificate please ensure copies of the certificate and private key exist in the specified location."
+      echoWarning "Neither '${certPath}' nor '${pkPath}' where found.  Skipping certificate installation."
     fi
   )
 }
@@ -1055,6 +1486,24 @@ transferRoutes() {
       exitOnError
     done
   )
+}
+
+untagImages() {
+  _appName=${1}
+  if [ -z "${_appName}" ]; then
+    echoError "\nuntagAllImages; You MUST specify the name to use when filtering on the 'app' label.\n"
+    exit 1
+  fi
+
+  printAndAskToContinue "If you contiune the all of the tags from any image associated to '${_appName}' will be deleted."
+
+  appImages=$(oc -n ${TOOLS} get is -l app=${_appName} --template '{{ range .items }}{{ printf "%s\n" .metadata.name}}{{end}}')
+  for appImage in ${appImages}; do
+    sourceTags=$( oc -n ${TOOLS} get is ${appImage} --template '{{ range .spec.tags }}{{ printf "%s\n" .name}}{{end}}')
+    for sourceTag in ${sourceTags}; do
+      oc -n ${TOOLS} tag ${appImage}:${sourceTag} -d
+    done
+  done
 }
 
 # =================================================================================================================
@@ -1104,25 +1553,40 @@ dropAndRecreateDatabaseWithMigrations() {
     # is managed by migrations hosted on an API pod.
     #
     # The function is purposely wrapped in a subshell `(...)` to avoid variable name collisions.
-    _apiPodName=${1}
-    _dbPodName=${2}
-    if [ -z "${_apiPodName}" ] || [ -z "${_dbPodName}" ]; then
+    local OPTIND
+    unset local autoScale
+    unset local flags
+    while getopts a FLAG; do
+      case $FLAG in
+        a )
+          local autoScale=1
+          local flags="-w"
+          ;;
+      esac
+    done
+    shift $((OPTIND-1))
+
+    local apiPodName=${1}
+    local dbPodName=${2}
+    if [ -z "${apiPodName}" ] || [ -z "${dbPodName}" ]; then
       echo -e \\n"dropAndRecreateDatabaseWithMigrations; Missing parameter!"\\n
       exit 1
     fi
 
-    scaleDown ${_apiPodName}
+    scaleDown ${flags} ${apiPodName}
+    exitOnError
+    if [ -z ${autoScale} ]; then
+      printAndWait "Wait for the ${apiPodName} pod to completely shut down before continuing."
+    fi
+
+    dropAndRecreatePostgreSqlDatabase ${dbPodName}
     exitOnError
 
-    printAndWait "Wait for the ${_apiPodName} pod to completely shut down before continuing."
-
-    dropAndRecreatePostgreSqlDatabase ${_dbPodName}
+    scaleUp ${flags} ${apiPodName}
     exitOnError
-
-    scaleUp ${_apiPodName}
-    exitOnError
-
-    printAndWait "Wait for the ${_apiPodName} pod to completely start up and ensure it has finished running the database migrations before continuing."
+    if [ -z ${autoScale} ]; then
+      printAndWait "Wait for the ${apiPodName} pod to completely start up and ensure it has finished running the database migrations before continuing."
+    fi
   )
 }
 
@@ -1230,6 +1694,12 @@ function getRecordCounts() {
   # -------------------------------------------------------------------------------
   _dbPodName=${1}
   _databaseName=${2}
+  _resourceSuffix=${3:-${resourceSuffix}}
+
+  # echoWarning "_dbPodName: ${_dbPodName}"
+  # echoWarning "_databaseName: ${_databaseName}"
+  # echoWarning "_resourceSuffix: ${_resourceSuffix}"
+
   if [ -z "${_dbPodName}" ]; then
     echoError "\ngetRecordCounts; You MUST specify the name of the database pod.\n"
     exit 1
@@ -1240,7 +1710,7 @@ function getRecordCounts() {
   fi
 
   command='
-    create or replace function 
+    create or replace function
     count_rows(schema text, tablename text) returns integer
     as
     \$body$
@@ -1256,24 +1726,24 @@ function getRecordCounts() {
     language plpgsql;
   '
   runInContainer \
-    ${_dbPodName}${resourceSuffix} \
+    ${_dbPodName}${_resourceSuffix} \
     "psql -d "${_databaseName}" -q -c \"${command}\""
 
   echo
   command='
-    select 
+    select
       table_schema,
-      table_name, 
+      table_name,
       count_rows(table_schema, table_name),
       pg_size_pretty( pg_total_relation_size(table_name) ) as disk_usage
     from information_schema.tables
-    where 
-      table_schema not in ('"'"'pg_catalog'"'"', '"'"'information_schema'"'"') 
+    where
+      table_schema not in ('"'"'pg_catalog'"'"', '"'"'information_schema'"'"')
       and table_type='"'"'BASE TABLE'"'"'
     order by 3 desc;
   '
   runInContainer \
-    ${_dbPodName}${resourceSuffix} \
+    ${_dbPodName}${_resourceSuffix} \
     "psql -d "${_databaseName}" -c \"${command}\""
 }
 
@@ -1304,8 +1774,8 @@ function getConnections() {
     # Query taken from here:
     # https://dba.stackexchange.com/questions/161760/number-of-active-connections-and-remaining-connections
     command='
-      select max_conn,used,res_for_super,max_conn-used-res_for_super res_for_normal 
-      from 
+      select max_conn,used,res_for_super,max_conn-used-res_for_super res_for_normal
+      from
         (select count(*) used from pg_stat_activity) t1,
         (select setting::int res_for_super from pg_settings where name=\$\$superuser_reserved_connections\$\$) t2,
         (select setting::int max_conn from pg_settings where name=\$\$max_connections\$\$) t3;
@@ -1318,6 +1788,33 @@ function getConnections() {
       ${_dbPodName}${resourceSuffix} \
       "psql -c \"${command}\""
     echo "=============================================================="
+  )
+}
+
+# Drops a specific database from a postgresql container.
+# If a databasename is not provided the default '${POSTGRESQL_DATABASE}' database is assumed.
+function dropDatabase() {
+  (
+    _podName=${1}
+    _databasename=${2}
+    if [ -z "${_podName}" ]; then
+      echoError "\ndropDatabase; You MUST specify a pod name.\n"
+      exit 1
+    fi
+
+    if [ -z "${_databasename}" ]; then
+      databaseName="default"
+      cmd='psql -ac "DROP DATABASE \"${POSTGRESQL_DATABASE}\";"'
+    else
+      databaseName="${_databasename}"
+      cmd="psql -ac 'DROP DATABASE \"${_databasename}\";'"
+    fi
+
+    printAndAskToContinue "If you contiune the ${databaseName} database on $(getProjectName)/${_podName}${resourceSuffix} will be dropped.  All data will be lost."
+    runInContainer -v \
+      ${_podName}${resourceSuffix} \
+      "${cmd}"
+    echoWarning "\nThe ${databaseName} database on $(getProjectName)/${_podName}${resourceSuffix} has been dropped."
   )
 }
 # =================================================================================================================
@@ -1335,10 +1832,6 @@ deleteWallets() {
   fi
 
   printAndAskToContinue "If you contiune the wallets from ${_podNames} will be deleted.  All data will be lost."
-
-  switchProject
-  exitOnError
-
   deleteFromPods "/home/indy/.indy_client/wallet/*" ${_podNames}
 }
 
@@ -1404,3 +1897,280 @@ generateSeed() {
   echo ${_seed}
 }
 # =================================================================================================================
+
+function getSecret() {
+  (
+    resourceName=${1}
+    key=${2}
+    projectName=${3:-$(getProjectName)}
+    if [ -z "${resourceName}" ] || [ -z "${key}" ]; then
+      echoError "\ngetSecret; You must specify the 'resourceName' and 'key'.\n"
+      exit 1
+    fi
+
+    echo $(oc -n ${projectName} extract --to=- --keys=${key} secret/${resourceName} 2>&1 | sed -n 2p)
+  )
+}
+
+function buildPullSecret(){
+  USE_PULL_CREDS=${1}
+  CRED_SEARCH_NAMES=${2}
+  PULL_CREDS=${3}
+  DOCKER_REG=${4}
+  PROMPT_CREDS=${5}
+  CRED_ENVS=${6}
+
+  #build the credentials
+  if [ ! -z ${USE_PULL_CREDS} ] && [ ${USE_PULL_CREDS} = true ]; then
+    if [ ! -z ${PROMPT_CREDS} ] && [ ${PROMPT_CREDS} = true ]; then
+      registerPullSecretPrompt "${PROJECT_NAMESPACE}" "${PULL_CREDS}" "${DOCKER_REG}" "${CRED_ENVS[@]}" "${DOCKER_USERNAME}" "${DOCKER_PASSWORD}"
+    else
+      registerPullSecret "${PROJECT_NAMESPACE}" "${CRED_SEARCH_NAMES}" "${PULL_CREDS}" "${DOCKER_REG}" "${CRED_ENVS[@]}"
+    fi
+  fi
+}
+
+function registerPullSecretPrompt(){
+  namespaceName=${1}
+  newCredName=${2}
+  dockerReg=${3}
+  credEnvs=${4}
+  userName=${5}
+  password=${6}
+
+  if ([ -z ${userName} ] || [ -z ${password} ]); then
+    echoWarning "Please enter your ${dockerReg} username"
+    read userName
+
+    echoWarning "Please enter your ${dockerReg} password or login token"
+    read password
+  fi
+
+  #set cred env to tools if unset
+  if [ -z "${credEnvs}" ]; then
+    credEnvs="tools"
+  fi
+  #create pull secret in each environment we need
+  for env in ${credEnvs}; do
+    cred_exists=0
+    oc create secret docker-registry ${newCredName} -n ${namespaceName}-${env} \
+      --docker-server=${dockerReg} \
+      --docker-username=${userName} \
+      --docker-password=${password} \
+      --docker-email=${userName}@${namespaceName}-${env}.local &> /dev/null || cred_exists=1
+    if (( ! ${cred_exists})); then
+      echoWarning "\nCreated new pull secret, ${newCredName}, in ${namespaceName}-${env} ..."
+    else
+      echoWarning "\nPull secret, ${newCredName} already exists in ${namespaceName}-${env} ..."
+    fi
+
+    # Always link / relink the pull secret to the service accounts ...
+    echoWarning "Linking pull secret, ${newCredName}, to the default service account in ${namespaceName}-${env} ..."
+    # --for=pull is required for builds and deployments to be able to authenticate correctly when pulling images
+    oc -n ${namespaceName}-${env} secrets link default ${newCredName} --for=pull
+
+    echoWarning "Linking pull secret, ${newCredName}, to the builder service account in ${namespaceName}-${env} ..."
+    oc -n ${namespaceName}-${env} secrets link builder ${newCredName}
+  done
+}
+
+function registerPullSecret() {
+    namespaceName=${1}
+    credSearchNames=${2}
+    newCredName=${3}
+    dockerReg=${4}
+    credEnvs=${5}
+
+    for credSearchName in ${credSearchNames}; do
+      credSearchFilter+="${credSearchName}\|"
+    done
+    credSearchFilter=$(echo ${credSearchFilter} | sed 's~[\|]*$~~g')
+
+    credName=$(oc -n ${namespaceName}-tools get secrets --template '{{ range $item := .items }}{{ if (eq $item.type "kubernetes.io/basic-auth") }}{{ printf "%s\n" $item.metadata.name}}{{ end }}{{end}}' | sed -n "/${credSearchFilter}/p")
+    userName=$(getSecret ${credName} username ${namespaceName}-tools)
+    password=$(getSecret ${credName} password ${namespaceName}-tools)
+
+    # If we fail to find cred search name do nothing
+    if [ ! -z ${credName} ] && [ ! -z ${userName} ] && [ ! -z ${password} ]; then
+      echoWarning "Found secret ${credName}, would you like to use this as a pull secret? (y/n)"
+      read resp
+      if [ ${resp} = "y" ]; then
+        registerPullSecretPrompt ${namespaceName} ${newCredName} ${dockerReg} "${credEnvs[@]}" ${userName} ${password}
+      else
+        echo "Done!"
+      fi
+    fi
+}
+
+function listBuildRefs() {
+  # Lists build configurations and their git references in a convenient column format.
+  (
+    projectName=${1:-${TOOLS}}
+    echo
+    oc -n ${projectName} get bc --template '{{ range .items }}{{ printf "%s,%s,%s\n" .metadata.name .spec.source.git.uri .spec.source.git.ref}}{{end}}' | sed 's~%!s(<nil>)~-~g' | column -t -s ,
+  )
+}
+
+
+function yqIsInstalled()
+{
+  (
+    # Check for dependancies
+    YQ_EXE=yq
+    if ! isInstalled ${YQ_EXE}; then
+        echoWarning "\nThe ${YQ_EXE} executable is required and was not found on your path.\n"
+
+cat <<-EOF
+The recommended approach to installing the required package(s) is to use either [Homebrew](https://brew.sh/) (MAC)
+or [Chocolatey](https://chocolatey.org/) (Windows).
+
+Windows:
+  - chocolatey install ${YQ_EXE}
+
+MAC:
+  - brew install ${YQ_EXE}
+EOF
+        exit 1
+    fi
+
+    exit 0
+  )
+}
+
+function convertJsonToYaml() {
+  (
+    if ! yqIsInstalled; then
+      exit 1
+    fi
+
+    # Get a list of json formatted configuration files for the project ...
+    templates=$(getConfigTemplates $(getTemplateDir) 2>/dev/null)
+    for template in ${templates}; do
+      if [[ "${template}" == *.json ]]; then
+        jsonTemplates+=" ${template}"
+      fi
+    done
+
+    # echo -e "\nConfiguration Templates:"
+    # for template in ${templates}; do
+    #   echo "  ${template}"
+    # done
+
+    if [ ! -z "${jsonTemplates}" ]; then
+      echoWarning "\nIf you continue, the following configuration files will be converted from json to yaml format:\n"
+      for template in ${jsonTemplates}; do
+        echo "  ${template}"
+      done
+      printAndAskToContinue " "
+
+      for template in ${jsonTemplates}; do
+        outputFilename=$(echo ${template} | sed "s~.json~.yaml~g")
+        echo "Converting ${template} to yaml and writing the content to ${outputFilename} ..."
+        yq eval --prettyPrint "${template}" > "${outputFilename}"
+        exitOnError
+
+        echo -e "Removing ${template} ...\n"
+        rm "${template}"
+      done
+    else
+      echoWarning "\nNo json formatted configuration files were found in your project ..."
+    fi
+  )
+}
+
+function getRoutes()
+{
+  (
+    local OPTIND
+    unset local filter
+    unset local cluster
+    while getopts f:d: FLAG; do
+      case $FLAG in
+        f )
+          local filter=${OPTARG}
+          ;;
+        d )
+          local cluster=${OPTARG}
+          ;;
+      esac
+    done
+    shift $((OPTIND-1))
+
+    if [ ! -z "${cluster}" ]; then
+      context=$(oc config get-contexts | sed 's/*/ /g' | grep ${cluster} | awk '{print $1}' | head -n 1)
+    else
+      context=$(oc config current-context)
+    fi
+
+    if [ -z ${FULLY_QUALIFIED_NAMESPACE} ]; then
+      projects=$(oc --context=${context} projects -q)
+    else
+      projects=$(getProjectName)
+    fi
+
+    if [ ! -z "${filter}" ]; then
+      echoWarning "\nFiltering route list on '${filter}' ..."
+    fi
+
+    for project in ${projects}; do
+      routes=$(oc -n ${project} --context=${context} get route --template '{{ range $item := .items }}{{if $item.spec.path}}{{ printf "%s,%s%s\n" $item.metadata.name $item.spec.host $item.spec.path}}{{ else }}{{ printf "%s,%s\n" $item.metadata.name $item.spec.host}}{{end}}{{end}}')
+
+      if [ ! -z "${filter}" ]; then
+        routes=$(echo "${routes}" | grep "${filter}")
+      fi
+
+      if [ ! -z "${routes}" ]; then
+        echoWarning \\n"${project}:"
+        echo -e "NAME:,HOST:\n${routes}" | column -t -s ,
+      fi
+    done
+  )
+}
+
+function getAllowLists()
+{
+  (
+    local OPTIND
+    unset local filter
+    unset local cluster
+    while getopts f:d: FLAG; do
+      case $FLAG in
+        f )
+          local filter=${OPTARG}
+          ;;
+        d )
+          local cluster=${OPTARG}
+          ;;
+      esac
+    done
+    shift $((OPTIND-1))
+
+    if [ ! -z "${cluster}" ]; then
+      context=$(oc config get-contexts | sed 's/*/ /g' | grep ${cluster} | awk '{print $1}' | head -n 1)
+    else
+      context=$(oc config current-context)
+    fi
+
+    if [ -z ${FULLY_QUALIFIED_NAMESPACE} ]; then
+      projects=$(oc --context=${context} projects -q)
+    else
+      projects=$(getProjectName)
+    fi
+
+    # Filter the project list ...
+    if [ ! -z "${filter}" ]; then
+      echoWarning "\nFiltering project list on '${filter}' ..."
+      projects=$(echo "${projects}" | grep "${filter}")
+    fi
+
+    for project in ${projects}; do
+      allowLists=$(oc -n ${project} --context=${context} get route --template '{{ range $item := .items }}{{ range $key,$value := .metadata.annotations }}{{ if (eq $key "haproxy.router.openshift.io/ip_whitelist") }}{{ printf "%s,%s\n" $item.metadata.name $value }}{{ end }}{{ end }}{{end}}')
+      if [ ! -z "${allowLists}" ]; then
+        echoWarning \\n"${project}:"
+        echo -e "NAME:,ALLOW LIST:\n${allowLists}" | column -t -s ,
+      fi
+    done
+  )
+}
+
+export OC_FUNCTIONS_LOADED=1

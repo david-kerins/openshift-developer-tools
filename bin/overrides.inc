@@ -93,6 +93,33 @@ writeParameter(){
   )
 }
 
+parseHostnameParameter(){
+  (
+    _sourceParamName=${1}
+    _destParamName=${2}
+    # Parses the host name from the url contained in the source parameter, and writes the value into the destination parameter.
+    eval ${_destParamName}=$(getHostname $(getParameter ${_sourceParamName}))
+    printStatusMsg "Parsing ${_destParamName} from ${_sourceParamName}; '$(getParameter ${_sourceParamName})' => '${!_destParamName}' ..."
+    writeParameter "${_destParamName}" "${!_destParamName}" "false"
+  )
+}
+
+getParameter(){
+  (
+    _paramName=${1}
+    # Reads a parameter from the override param file.
+    echo $(grep ${_paramName} $"${_overrideParamFile}" | awk -F= '{print $2}')
+  )
+}
+
+getHostname(){
+  (
+    _url=${1}
+    # Extract the host name from a url.
+    echo $(echo ${_url} | awk -F[/:] '{print $4}')
+  )
+}
+
 generateKey(){
   (
     _length=${1:-48}
@@ -136,7 +163,15 @@ generateConfigMap() {
     exit 1
   fi
 
-  oc create configmap ${_config_map_name} --from-file ${_source_file} --dry-run -o ${_output_format} > ${_output_file}
+  # Auto-detect env files ....
+  extension="${_source_file##*.}"
+  if [ ! -z "${extension}" ] && [[ "${extension}" == "env" ]]; then
+    _from_file_type="--from-env-file"
+  else
+    _from_file_type="--from-file"
+  fi
+  
+  oc create configmap ${_config_map_name} ${_from_file_type} ${_source_file} --dry-run -o ${_output_format} > ${_output_file}
 }
 
 initialize(){

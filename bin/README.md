@@ -21,7 +21,7 @@ Supports both json and yaml based OpenShift configuration templates.
 
     Using GIT Bash on Windows as an example;
     1. Create a `.bashrc` file in your home directory (`C:\Users\<UserName/>`, for example `C:\Users\Wade`).
-    1. Add the line `PATH=${PATH}:/c/openshift-project-tools/bin`
+    1. Add the line `PATH=${PATH}:/c/openshift-developer-tools/bin`
     1. Restart GIT Bash.  _If you have not done this before, GIT will write out some warnings and create some files for you that fix the issues._
 
 All of the scripts will be available on the path and can be run from any directory.  This is important as many of the scripts expect to be run from the top level `./openshift` directory you will create in your project.
@@ -75,14 +75,14 @@ Also make sure `usr/local/bin` is at a higher priority on your **PATH** than `us
 
 ### Linux Setup
 
-These scripts use `awk`, but problems may be encountered if `mawk` is used rather than the GNU awk `gawk`. One distribution that uses `mawk` by default is Kali Linux for the Linux Subsystem for Windows:
+These scripts use `awk`, but problems may be encountered if `mawk` is used rather than the GNU awk `gawk`. `mawk` is used by default in Ubuntu 20.04 and Kali Linux for the Linux Subsystem for Windows.
 
 ```
 $ awk -W version
 mawk 1.3.3 Nov 1996, Copyright (C) Michael D. Brennan
 ```
 
-For Kali Linux, installing `gawk` will make it the default implementation of `awk`:
+For Ubuntu and Kali Linux, installing `gawk` will make it the default implementation of `awk`:
 
 ```
 $ sudo apt-get install gawk

@@ -44,6 +44,8 @@ fi
 # Functions:
 # -----------------------------------------------------------------------------------------------------------------
 generateConfigs() {
+  _projectName=$(getProjectName)
+
   DEPLOYS=$(getDeploymentTemplates $(getTemplateDir ${_component_name}))
   # echo "Deployment templates:"
   # for deploy in ${DEPLOYS}; do
@@ -83,51 +85,57 @@ generateConfigs() {
     # echoWarning "_template_basename: ${_template_basename}"
     # echoWarning "_deploymentConfig: ${_deploymentConfig}"
     # echoWarning "_searchPath: ${_searchPath}"
-    # echoWarning "PARAM_OVERRIDE_SCRIPT: ${PARAM_OVERRIDE_SCRIPT}"
+    # echoWarning PARAM_OVERRIDE_SCRIPT: \"${PARAM_OVERRIDE_SCRIPT}\"
     # echoWarning "_componentSettings: ${_componentSettings}"
     # echoWarning "_paramFileName: ${_paramFileName}"
     # echoWarning "PARAMFILE: ${PARAMFILE}"
     # echoWarning "ENVPARAM: ${ENVPARAM}"
     # echoWarning "LOCALPARAM: ${LOCALPARAM}"
-    # exit 1 
+    # exit 1
+
+    # Used to inject variables from parameter files into override scripts
+    unset overrideScriptVars
 
     if [ -f "${PARAMFILE}" ]; then
+      overrideScriptVars="${overrideScriptVars:+~}$(readConf -f -d '\~' ${PARAMFILE})"
       PARAMFILE="--param-file=${PARAMFILE}"
     else
       PARAMFILE=""
     fi
 
     if [ -f "${ENVPARAM}" ]; then
+      overrideScriptVars+="${overrideScriptVars:+~}$(readConf -f -d '\~' ${ENVPARAM})"
       ENVPARAM="--param-file=${ENVPARAM}"
     else
       ENVPARAM=""
     fi
 
     if [ -f "${LOCALPARAM}" ]; then
+      overrideScriptVars+="${overrideScriptVars:+~}$(readConf -f -d '\~' ${LOCALPARAM})"
       LOCALPARAM="--param-file=${LOCALPARAM}"
     else
       LOCALPARAM=""
     fi
 
+    # echoWarning "overrideScriptVars: ${overrideScriptVars}"
+    # exit 1
+
     # Parameter overrides can be defined for individual deployment templates at the root openshift folder level ...
-    if [ -f ${PARAM_OVERRIDE_SCRIPT} ]; then
-      if [ -z "${SPECIALDEPLOYPARM}" ]; then
-        echo -e "Loading parameter overrides for ${deploy} ..."
-        SPECIALDEPLOYPARM=$(OPERATION=${OPERATION} ${PARAM_OVERRIDE_SCRIPT})
-      else
-        echo -e "Adding parameter overrides for ${deploy} ..."
-        SPECIALDEPLOYPARM="${SPECIALDEPLOYPARM} $(OPERATION=${OPERATION} ${PARAM_OVERRIDE_SCRIPT})"
-      fi
+    if [ ! -z ${PARAM_OVERRIDE_SCRIPT} ] && [ -f ${PARAM_OVERRIDE_SCRIPT} ]; then
+      # Read the TSV key=value pairs into an array ...
+      IFS='~' read -ra overrideScriptVarsArray <<< "${overrideScriptVars}"
+      echo -e "Loading parameter overrides for ${deploy} ..."
+      SPECIALDEPLOYPARM+=" $(env "${overrideScriptVarsArray[@]}" ${PARAM_OVERRIDE_SCRIPT})"
     fi
 
     if updateOperation; then
       echoWarning "Preparing deployment configuration for update/replace, removing any 'Secret' objects so existing values are left untouched ..."
-      oc process  --local --filename=${_template} ${SPECIALDEPLOYPARM} ${LOCALPARAM} ${ENVPARAM} ${PARAMFILE} \
+      oc -n ${_projectName} process  --local --filename=${_template} ${SPECIALDEPLOYPARM} ${LOCALPARAM} ${ENVPARAM} ${PARAMFILE} \
       | jq 'del(.items[] | select(.kind== "Secret"))' \
       > ${_deploymentConfig}
       exitOnError
     elif createOperation; then
-      oc process  --local --filename=${_template} ${SPECIALDEPLOYPARM} ${LOCALPARAM} ${ENVPARAM} ${PARAMFILE} > ${_deploymentConfig}
+      oc -n ${_projectName}  process  --local --filename=${_template} ${SPECIALDEPLOYPARM} ${LOCALPARAM} ${ENVPARAM} ${PARAMFILE} > ${_deploymentConfig}
       exitOnError
     else
       echoError "\nUnrecognized operation, $(getOperation).  Unable to process template.\n"
